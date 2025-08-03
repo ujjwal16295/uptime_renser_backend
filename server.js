@@ -22,7 +22,23 @@ const transporter = nodemailer.createTransport({
 });
 
 // Middleware
-app.use(cors()); // Allow all origins
+// app.use(cors()); // Allow all origins
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Check if the origin starts with your allowed domain
+    if (origin.startsWith('https://uptime-frontend-ivory.vercel.app')) {
+      return callback(null, true);
+    }
+    
+    // Reject all other origins
+    const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+    return callback(new Error(msg), false);
+  },
+  credentials: true // Enable if you need to send cookies/auth headers
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
