@@ -350,10 +350,12 @@ app.get('/api/credit/:email', async (req, res) => {
   }
 });
 
-// Add 43200 credits to user's account
+// Add 43200 credits to user's account (with 70k limit)
 app.post('/api/credit/add', async (req, res) => {
   try {
     const { email } = req.body;
+    const CREDIT_TO_ADD = 43200;
+    const MAX_CREDIT_LIMIT = 70000;
 
     // Validate required fields
     if (!email) {
@@ -393,8 +395,25 @@ app.post('/api/credit/add', async (req, res) => {
       });
     }
 
-    // Add 43200 to current credit
-    const newCredit = existingUser.credit + 43200;
+    // Calculate new credit total
+    const newCredit = existingUser.credit + CREDIT_TO_ADD;
+
+    // Check if adding credits would exceed the limit
+    if (newCredit > MAX_CREDIT_LIMIT) {
+      const remainingCapacity = Math.max(0, MAX_CREDIT_LIMIT - existingUser.credit);
+      return res.status(400).json({
+        error: 'Credit limit exceeded',
+        message: `Adding ${CREDIT_TO_ADD.toLocaleString()} credits would exceed the maximum limit of ${MAX_CREDIT_LIMIT.toLocaleString()}. Current balance: ${existingUser.credit.toLocaleString()}. You can only add ${remainingCapacity.toLocaleString()} more credits.`,
+        data: {
+          current_credit: existingUser.credit,
+          attempted_addition: CREDIT_TO_ADD,
+          would_result_in: newCredit,
+          maximum_allowed: MAX_CREDIT_LIMIT,
+          remaining_capacity: remainingCapacity,
+          can_add_more: remainingCapacity > 0
+        }
+      });
+    }
 
     // Update user's credit
     const { data: updatedUser, error: updateError } = await supabase
@@ -416,7 +435,7 @@ app.post('/api/credit/add', async (req, res) => {
     const emailSent = await sendCreditNotificationEmail(
       updatedUser.email,
       existingUser.credit,
-      43200,
+      CREDIT_TO_ADD,
       updatedUser.credit
     );
 
@@ -426,10 +445,11 @@ app.post('/api/credit/add', async (req, res) => {
       data: {
         email: updatedUser.email,
         previous_credit: existingUser.credit,
-        added_credit: 43200,
+        added_credit: CREDIT_TO_ADD,
         new_credit: updatedUser.credit,
         created_at: updatedUser.created_at,
-        email_sent: emailSent
+        email_sent: emailSent,
+        remaining_capacity: MAX_CREDIT_LIMIT - updatedUser.credit
       }
     });
 
