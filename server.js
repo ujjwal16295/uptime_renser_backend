@@ -13,7 +13,7 @@ const supabaseKey = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Email configuration
-const transporter = nodemailer.createTransport({
+const transporter = nodemailer.createTransporter({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER, // your actual gmail
@@ -287,6 +287,43 @@ const sendCreditNotificationEmail = async (userEmail, previousCredit, addedCredi
   }
 };
 
+// Helper function to get user with links
+const getUserWithLinks = async (email) => {
+  // Get user data
+  const { data: user, error: userError } = await supabase
+    .from('users')
+    .select('*')
+    .eq('email', email)
+    .single();
+
+  if (userError) {
+    return { data: null, error: userError };
+  }
+
+  // Get user's links with their individual ping counts
+  const { data: links, error: linksError } = await supabase
+    .from('links')
+    .select('*')
+    .eq('user_id', user.id);
+
+  if (linksError) {
+    return { data: null, error: linksError };
+  }
+
+  // Return user data with links and their individual ping counts
+  const userWithLinks = {
+    ...user,
+    links: links.map(link => ({
+      id: link.id,
+      url: link.url,
+      ping_count: link.ping_count || 0,
+      last_ping: link.last_ping
+    }))
+  };
+
+  return { data: userWithLinks, error: null };
+};
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
@@ -309,12 +346,8 @@ app.get('/api/credit/:email', async (req, res) => {
       });
     }
 
-    // Get user data from database
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('email, credit, created_at')
-      .eq('email', email)
-      .single();
+    // Get user data with links (maintains backward compatibility)
+    const { data: user, error } = await getUserWithLinks(email);
 
     if (error) {
       if (error.code === 'PGRST116') {
@@ -376,7 +409,7 @@ app.post('/api/credit/add', async (req, res) => {
     // Check if user exists and get current credit
     const { data: existingUser, error: checkError } = await supabase
       .from('users')
-      .select('email, credit')
+      .select('id, email, credit')
       .eq('email', email)
       .single();
 
@@ -462,7 +495,7 @@ app.post('/api/credit/add', async (req, res) => {
   }
 });
 
-// Add URL endpoint - Modified to work with email and links
+// Add URL endpoint - Modified to work with new schema
 app.post('/api/urls', async (req, res) => {
   try {
     const { email, link } = req.body;
@@ -494,9 +527,12 @@ app.post('/api/urls', async (req, res) => {
     // Check if user exists
     const { data: existingUser, error: checkError } = await supabase
       .from('users')
-      .select('*')
+      .select('id, email, credit, created_at')
       .eq('email', email)
       .single();
+
+    let userId;
+    let userCreated = false;
 
     if (checkError && checkError.code !== 'PGRST116') {
       console.error('Error checking existing user:', checkError);
@@ -506,70 +542,95 @@ app.post('/api/urls', async (req, res) => {
       });
     }
 
-    let userData;
-
     if (existingUser) {
-      // User exists - check if link already exists
-      if (existingUser.links && existingUser.links.includes(link)) {
+      userId = existingUser.id;
+      
+      // Check if link already exists for this user
+      const { data: existingLink, error: linkCheckError } = await supabase
+        .from('links')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('url', link)
+        .single();
+
+      if (linkCheckError && linkCheckError.code !== 'PGRST116') {
+        console.error('Error checking existing link:', linkCheckError);
+        return res.status(500).json({
+          error: 'Database error',
+          message: 'Failed to check link existence'
+        });
+      }
+
+              if (existingLink) {
+        // Get updated user data with links for response
+        const { data: userData, error: getUserError } = await getUserWithLinks(email);
+        
         return res.status(409).json({
           error: 'Link already exists',
           message: 'This link is already being monitored for this user',
-          data: existingUser
+          data: userData || null
         });
       }
-
-      // Add link to existing user's links array
-      const updatedLinks = existingUser.links ? [...existingUser.links, link] : [link];
-      
-      const { data, error } = await supabase
-        .from('users')
-        .update({ 
-          links: updatedLinks,
-          ping: existingUser.ping + 1 // Increment ping count
-        })
-        .eq('email', email)
-        .select()
-        .single();
-
-      if (error) {
-        console.error('Error updating user:', error);
-        return res.status(500).json({
-          error: 'Database error',
-          message: 'Failed to update user links'
-        });
-      }
-
-      userData = data;
     } else {
       // User doesn't exist - create new user
-      const { data, error } = await supabase
+      const { data: newUser, error: createUserError } = await supabase
         .from('users')
         .insert([
           {
             email: email,
-            links: [link],
-            ping: 1, // Set initial ping to 1 since we're adding first link
             credit: 43200, // Default credit value
-            created_at: new Date().toISOString()
           }
         ])
-        .select()
+        .select('id, email, credit, created_at')
         .single();
 
-      if (error) {
-        console.error('Error creating user:', error);
+      if (createUserError) {
+        console.error('Error creating user:', createUserError);
         return res.status(500).json({
           error: 'Database error',
           message: 'Failed to create user'
         });
       }
 
-      userData = data;
+      userId = newUser.id;
+      userCreated = true;
+    }
+
+    // Add link to links table
+    const { data: newLink, error: linkError } = await supabase
+      .from('links')
+      .insert([
+        {
+          user_id: userId,
+          url: link,
+          ping_count: 0
+        }
+      ])
+      .select()
+      .single();
+
+    if (linkError) {
+      console.error('Error adding link:', linkError);
+      return res.status(500).json({
+        error: 'Database error',
+        message: 'Failed to add link'
+      });
+    }
+
+    // Get updated user data with links for response
+    const { data: userData, error: getUserError } = await getUserWithLinks(email);
+
+    if (getUserError) {
+      console.error('Error fetching updated user data:', getUserError);
+      return res.status(500).json({
+        error: 'Database error',
+        message: 'Failed to fetch updated user data'
+      });
     }
 
     res.status(201).json({
       success: true,
-      message: existingUser ? 'Link added successfully to existing user' : 'User created and link added successfully',
+      message: userCreated ? 'User created and link added successfully' : 'Link added successfully to existing user',
       data: userData
     });
 
