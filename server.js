@@ -495,10 +495,11 @@ app.post('/api/credit/add', async (req, res) => {
   }
 });
 
-// Add URL endpoint - Modified to work with new schema
+// Add URL endpoint - Modified to enforce 3-link limit per user
 app.post('/api/urls', async (req, res) => {
   try {
     const { email, link } = req.body;
+    const MAX_LINKS_PER_USER = 3;
 
     // Validate required fields
     if (!email || !link) {
@@ -545,23 +546,35 @@ app.post('/api/urls', async (req, res) => {
     if (existingUser) {
       userId = existingUser.id;
       
-      // Check if link already exists for this user
-      const { data: existingLink, error: linkCheckError } = await supabase
+      // Check current link count for existing user
+      const { data: userLinks, error: linkCountError } = await supabase
         .from('links')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('url', link)
-        .single();
+        .select('id, url')
+        .eq('user_id', userId);
 
-      if (linkCheckError && linkCheckError.code !== 'PGRST116') {
-        console.error('Error checking existing link:', linkCheckError);
+      if (linkCountError) {
+        console.error('Error checking user link count:', linkCountError);
         return res.status(500).json({
           error: 'Database error',
-          message: 'Failed to check link existence'
+          message: 'Failed to check user link count'
         });
       }
 
-              if (existingLink) {
+      // Check if user has reached the maximum link limit
+      if (userLinks.length >= MAX_LINKS_PER_USER) {
+        return res.status(400).json({
+          error: 'Link limit exceeded',
+          message: `You can't add more URLs. You already have ${userLinks.length} URLs (maximum allowed: ${MAX_LINKS_PER_USER}).`,
+          data: {
+            current_links: userLinks.length,
+            max_allowed: MAX_LINKS_PER_USER
+          }
+        });
+      }
+
+      // Check if link already exists for this user
+      const existingLink = userLinks.find(userLink => userLink.url === link);
+      if (existingLink) {
         // Get updated user data with links for response
         const { data: userData, error: getUserError } = await getUserWithLinks(email);
         
@@ -572,7 +585,7 @@ app.post('/api/urls', async (req, res) => {
         });
       }
     } else {
-      // User doesn't exist - create new user
+      // User doesn't exist - create new user (they can add their first link)
       const { data: newUser, error: createUserError } = await supabase
         .from('users')
         .insert([
