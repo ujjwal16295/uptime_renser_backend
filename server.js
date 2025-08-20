@@ -643,6 +643,168 @@ app.post('/api/urls', async (req, res) => {
   }
 });
 
+// Get all links for a user
+app.get('/api/user/:email/links', async (req, res) => {
+  try {
+    const { email } = req.params;
+
+    // Validate email format
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        error: 'Invalid email',
+        message: 'Please provide a valid email address'
+      });
+    }
+
+    // Get user data with links
+    const { data: user, error } = await getUserWithLinks(email);
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({
+          error: 'User not found',
+          message: 'No user found with this email address'
+        });
+      }
+      
+      console.error('Error fetching user with links:', error);
+      return res.status(500).json({
+        error: 'Database error',
+        message: 'Failed to fetch user links'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'User links retrieved successfully',
+      data: {
+        user: {
+          id: user.id,
+          email: user.email,
+          credit: user.credit,
+          created_at: user.created_at
+        },
+        links: user.links,
+        total_links: user.links.length,
+        total_pings: user.links.reduce((sum, link) => sum + (link.ping_count || 0), 0)
+      }
+    });
+
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Something went wrong on our end'
+    });
+  }
+});
+
+// Delete a specific link
+app.delete('/api/links/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { email } = req.body; // Optional: to verify ownership
+
+    // Validate link ID
+    if (!id || isNaN(parseInt(id))) {
+      return res.status(400).json({
+        error: 'Invalid link ID',
+        message: 'Please provide a valid link ID'
+      });
+    }
+
+    // If email is provided, verify the link belongs to the user
+    if (email) {
+      // Validate email format
+      if (!isValidEmail(email)) {
+        return res.status(400).json({
+          error: 'Invalid email',
+          message: 'Please provide a valid email address'
+        });
+      }
+
+      // Check if the link belongs to the user
+      const { data: linkWithUser, error: checkError } = await supabase
+        .from('links')
+        .select(`
+          id,
+          url,
+          users!links_user_id_fkey (
+            email
+          )
+        `)
+        .eq('id', parseInt(id))
+        .single();
+
+      if (checkError) {
+        if (checkError.code === 'PGRST116') {
+          return res.status(404).json({
+            error: 'Link not found',
+            message: 'No link found with this ID'
+          });
+        }
+        
+        console.error('Error checking link ownership:', checkError);
+        return res.status(500).json({
+          error: 'Database error',
+          message: 'Failed to verify link ownership'
+        });
+      }
+
+      // Verify ownership
+      if (linkWithUser.users.email !== email) {
+        return res.status(403).json({
+          error: 'Access denied',
+          message: 'You do not have permission to delete this link'
+        });
+      }
+    }
+
+    // Delete the link
+    const { data: deletedLink, error: deleteError } = await supabase
+      .from('links')
+      .delete()
+      .eq('id', parseInt(id))
+      .select()
+      .single();
+
+    if (deleteError) {
+      if (deleteError.code === 'PGRST116') {
+        return res.status(404).json({
+          error: 'Link not found',
+          message: 'No link found with this ID'
+        });
+      }
+      
+      console.error('Error deleting link:', deleteError);
+      return res.status(500).json({
+        error: 'Database error',
+        message: 'Failed to delete link'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Link deleted successfully',
+      data: {
+        deleted_link: {
+          id: deletedLink.id,
+          url: deletedLink.url,
+          ping_count: deletedLink.ping_count,
+          last_ping: deletedLink.last_ping
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Something went wrong on our end'
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 KeepAlive API server running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
