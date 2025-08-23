@@ -9,8 +9,11 @@ const PORT = process.env.PORT || 3001;
 
 // Supabase configuration
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
+// const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+// const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Email configuration
 const transporter = nodemailer.createTransport({
