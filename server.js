@@ -821,6 +821,131 @@ app.delete('/api/links/:id', async (req, res) => {
   }
 });
 
+
+// User registration/authentication endpoint
+app.post('/api/users/auth', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // Validate required fields
+    if (!email) {
+      return res.status(400).json({
+        error: 'Missing required field',
+        message: 'Email is required'
+      });
+    }
+
+    // Validate email format
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        error: 'Invalid email',
+        message: 'Please provide a valid email address'
+      });
+    }
+
+    // Check current user count
+    const { count: userCount, error: countError } = await supabase
+      .from('users')
+      .select('*', { count: 'exact', head: true });
+
+    if (countError) {
+      console.error('Error counting users:', countError);
+      return res.status(500).json({
+        error: 'Database error',
+        message: 'Failed to check user count'
+      });
+    }
+
+    // Check if this user already exists
+    const { data: existingUser, error: existingError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .single();
+
+    // If user doesn't exist and we're at the limit, reject
+    if (!existingUser && existingError?.code === 'PGRST116' && userCount >= 100) {
+      return res.status(403).json({
+        error: 'Registration closed',
+        message: 'Registration is currently closed. Only 100 people are allowed to join at this time.',
+        data: {
+          current_user_count: userCount,
+          max_users: 100
+        }
+      });
+    }
+
+    let userData;
+    let isNewUser = false;
+
+    if (existingUser) {
+      // User already exists, return their data
+      userData = existingUser;
+    } else {
+      // Create new user
+      const { data: newUser, error: createError } = await supabase
+        .from('users')
+        .insert([
+          {
+            email: email,
+            credit: 21600 // Default credit value
+          }
+        ])
+        .select()
+        .single();
+
+      if (createError) {
+        console.error('Error creating user:', createError);
+        return res.status(500).json({
+          error: 'Database error',
+          message: 'Failed to create user account'
+        });
+      }
+
+      userData = newUser;
+      isNewUser = true;
+    }
+
+    // Get user's links
+    const { data: links, error: linksError } = await supabase
+      .from('links')
+      .select('*')
+      .eq('user_id', userData.id);
+
+    if (linksError) {
+      console.error('Error fetching user links:', linksError);
+      return res.status(500).json({
+        error: 'Database error',
+        message: 'Failed to fetch user links'
+      });
+    }
+
+    res.status(isNewUser ? 201 : 200).json({
+      success: true,
+      message: isNewUser ? 'User account created successfully' : 'User authenticated successfully',
+      data: {
+        user: {
+          id: userData.id,
+          email: userData.email,
+          credit: userData.credit,
+          created_at: userData.created_at
+        },
+        links: links || [],
+        is_new_user: isNewUser,
+        user_count: userCount + (isNewUser ? 1 : 0)
+      }
+    });
+
+  } catch (error) {
+    console.error('Server error in user auth:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Something went wrong on our end'
+    });
+  }
+});
+
+
 app.listen(PORT, () => {
   console.log(`🚀 KeepAlive API server running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
