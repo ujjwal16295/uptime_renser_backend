@@ -1001,8 +1001,8 @@ app.get('/api/user/:email/plan', async (req, res) => {
 app.get('/api/user/:email/response-times', async (req, res) => {
   try {
     const { email } = req.params;
-    const { limit = 5 } = req.query; // Default to last 10 pings per link
- 
+    const { limit = 5 } = req.query;
+    
     // Validate email format
     if (!isValidEmail(email)) {
       return res.status(400).json({
@@ -1010,14 +1010,14 @@ app.get('/api/user/:email/response-times', async (req, res) => {
         message: 'Please provide a valid email address'
       });
     }
- 
+    
     // Get user ID first
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('email', email)
       .single();
- 
+    
     if (userError) {
       if (userError.code === 'PGRST116') {
         return res.status(404).json({
@@ -1027,39 +1027,46 @@ app.get('/api/user/:email/response-times', async (req, res) => {
       }
       return res.status(500).json({ error: 'Database error' });
     }
- 
-    // Get all links for the user with their ping data
-    const { data: linksWithPings, error: linksError } = await supabase
+    
+    // Get all links for the user
+    const { data: links, error: linksError } = await supabase
       .from('links')
-      .select(`
-        id,
-        url,
-        pings!inner(response_time, created_at)
-      `)
-      .eq('user_id', user.id)
-      .order('pings(created_at)', { ascending: false })
-      .limit(parseInt(limit), { foreignTable: 'pings' });
- 
+      .select('id, url')
+      .eq('user_id', user.id);
+    
     if (linksError) {
-      console.error('Error fetching links with pings:', linksError);
+      console.error('Error fetching links:', linksError);
       return res.status(500).json({ error: 'Database error' });
     }
- 
-    // Format response data
+    
+    // Get pings for each link
     const responseData = {};
-    linksWithPings.forEach(link => {
-      responseData[link.url] = link.pings.map(ping => ({
+    
+    for (const link of links) {
+      const { data: pings, error: pingsError } = await supabase
+        .from('pings')
+        .select('response_time, created_at')
+        .eq('link_id', link.id)
+        .order('created_at', { ascending: false })
+        .limit(parseInt(limit));
+      
+      if (pingsError) {
+        console.error('Error fetching pings for link:', link.id, pingsError);
+        continue;
+      }
+      
+      responseData[link.url] = pings.map(ping => ({
         response_time: ping.response_time,
         timestamp: ping.created_at
       }));
-    });
- 
+    }
+    
     res.json({
       success: true,
       message: 'Response times retrieved successfully',
       data: responseData
     });
- 
+    
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({
@@ -1067,8 +1074,7 @@ app.get('/api/user/:email/response-times', async (req, res) => {
       message: 'Something went wrong on our end'
     });
   }
- });
-
+});
 app.listen(PORT, () => {
   console.log(`🚀 KeepAlive API server running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
