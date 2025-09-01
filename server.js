@@ -946,7 +946,57 @@ app.post('/api/users/auth', async (req, res) => {
     });
   }
 });
+// Get user plan
+app.get('/api/user/:email/plan', async (req, res) => {
+  try {
+    const { email } = req.params;
 
+    // Validate email format
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        error: 'Invalid email',
+        message: 'Please provide a valid email address'
+      });
+    }
+
+    // Get user plan
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('plan')
+      .eq('email', email)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({
+          error: 'User not found',
+          message: 'No user found with this email address'
+        });
+      }
+      
+      console.error('Error fetching user plan:', error);
+      return res.status(500).json({
+        error: 'Database error',
+        message: 'Failed to fetch user plan'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Plan retrieved successfully',
+      data: {
+        plan: user.plan
+      }
+    });
+
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Something went wrong on our end'
+    });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`🚀 KeepAlive API server running on port ${PORT}`);
