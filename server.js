@@ -294,10 +294,10 @@ const sendCreditNotificationEmail = async (userEmail, previousCredit, addedCredi
 const getUserWithLinks = async (email) => {
   // Get user data
   const { data: user, error: userError } = await supabase
-    .from('users')
-    .select('*')
-    .eq('email', email)
-    .single();
+  .from('users')
+  .select('id, email, credit, plan, created_at')
+  .eq('email', email)
+  .single();
 
   if (userError) {
     return { data: null, error: userError };
@@ -316,6 +316,7 @@ const getUserWithLinks = async (email) => {
   // Return user data with links and their individual ping counts
   const userWithLinks = {
     ...user,
+    plan: user.plan || 'free', // Add this line
     links: links.map(link => ({
       id: link.id,
       url: link.url,
