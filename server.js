@@ -531,10 +531,10 @@ app.post('/api/urls', async (req, res) => {
 
     // Check if user exists
     const { data: existingUser, error: checkError } = await supabase
-      .from('users')
-      .select('id, email, credit, created_at')
-      .eq('email', email)
-      .single();
+    .from('users')
+    .select('id, email, credit, created_at, plan')
+    .eq('email', email)
+    .single();
 
     let userId;
     let userCreated = false;
@@ -555,7 +555,7 @@ app.post('/api/urls', async (req, res) => {
         .from('links')
         .select('id, url')
         .eq('user_id', userId);
-
+    
       if (linkCountError) {
         console.error('Error checking user link count:', linkCountError);
         return res.status(500).json({
@@ -563,15 +563,16 @@ app.post('/api/urls', async (req, res) => {
           message: 'Failed to check user link count'
         });
       }
-
-      // Check if user has reached the maximum link limit
-      if (userLinks.length >= MAX_LINKS_PER_USER) {
+    
+      // Check if user has reached the maximum link limit (only for free users)
+      if (existingUser.plan !== 'paid' && userLinks.length >= MAX_LINKS_PER_USER) {
         return res.status(400).json({
           error: 'Link limit exceeded',
-          message: `You can't add more URLs. You already have ${userLinks.length} URLs (maximum allowed: ${MAX_LINKS_PER_USER}).`,
+          message: `You can't add more URLs. You already have ${userLinks.length} URLs (maximum allowed: ${MAX_LINKS_PER_USER}). Upgrade to a paid plan for unlimited URLs.`,
           data: {
             current_links: userLinks.length,
-            max_allowed: MAX_LINKS_PER_USER
+            max_allowed: MAX_LINKS_PER_USER,
+            user_plan: existingUser.plan
           }
         });
       }
