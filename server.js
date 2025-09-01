@@ -997,6 +997,77 @@ app.get('/api/user/:email/plan', async (req, res) => {
     });
   }
 });
+// Get response times for all user's links
+app.get('/api/user/:email/response-times', async (req, res) => {
+  try {
+    const { email } = req.params;
+    const { limit = 5 } = req.query; // Default to last 10 pings per link
+ 
+    // Validate email format
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        error: 'Invalid email',
+        message: 'Please provide a valid email address'
+      });
+    }
+ 
+    // Get user ID first
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .single();
+ 
+    if (userError) {
+      if (userError.code === 'PGRST116') {
+        return res.status(404).json({
+          error: 'User not found',
+          message: 'No user found with this email address'
+        });
+      }
+      return res.status(500).json({ error: 'Database error' });
+    }
+ 
+    // Get all links for the user with their ping data
+    const { data: linksWithPings, error: linksError } = await supabase
+      .from('links')
+      .select(`
+        id,
+        url,
+        pings!inner(response_time, created_at)
+      `)
+      .eq('user_id', user.id)
+      .order('pings(created_at)', { ascending: false })
+      .limit(parseInt(limit), { foreignTable: 'pings' });
+ 
+    if (linksError) {
+      console.error('Error fetching links with pings:', linksError);
+      return res.status(500).json({ error: 'Database error' });
+    }
+ 
+    // Format response data
+    const responseData = {};
+    linksWithPings.forEach(link => {
+      responseData[link.url] = link.pings.map(ping => ({
+        response_time: ping.response_time,
+        timestamp: ping.created_at
+      }));
+    });
+ 
+    res.json({
+      success: true,
+      message: 'Response times retrieved successfully',
+      data: responseData
+    });
+ 
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Something went wrong on our end'
+    });
+  }
+ });
 
 app.listen(PORT, () => {
   console.log(`🚀 KeepAlive API server running on port ${PORT}`);
