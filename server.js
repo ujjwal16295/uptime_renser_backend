@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
+const Razorpay = require('razorpay');
+
 require('dotenv').config();
 
 const app = express();
@@ -24,6 +26,8 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+
+
 // Middleware
 // app.use(cors()); // Allow all origins
 app.use(cors({
@@ -44,6 +48,12 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
 
 // Helper function to validate email
 const isValidEmail = (email) => {
@@ -328,6 +338,65 @@ const getUserWithLinks = async (email) => {
   return { data: userWithLinks, error: null };
 };
 
+async function handleSubscriptionActivated(subscription) {
+  const { error } = await supabase
+    .from('users')
+    .update({ 
+      plan: 'paid',
+      subscription_status: 'active'
+    })
+    .eq('subscription_id', subscription.id);
+    
+  console.log('Subscription activated for subscription:', subscription.id);
+}
+
+async function handleSubscriptionCancelled(subscription) {
+  const { error } = await supabase
+    .from('users')
+    .update({ 
+      plan: 'free',
+      subscription_status: 'cancelled'
+    })
+    .eq('subscription_id', subscription.id);
+
+  console.log('Subscription cancelled for subscription:', subscription.id);
+}
+
+async function handleSubscriptionPaused(subscription) {
+  const { error } = await supabase
+    .from('users')
+    .update({ 
+      plan: 'free',
+      subscription_status: 'paused'
+    })
+    .eq('subscription_id', subscription.id);
+
+  console.log('Subscription paused for subscription:', subscription.id);
+}
+
+async function handleSubscriptionResumed(subscription) {
+  const { error } = await supabase
+    .from('users')
+    .update({ 
+      plan: 'paid',
+      subscription_status: 'active'
+    })
+    .eq('subscription_id', subscription.id);
+
+  console.log('Subscription resumed for subscription:', subscription.id);
+}
+
+async function handleSubscriptionCompleted(subscription) {
+  const { error } = await supabase
+    .from('users')
+    .update({ 
+      plan: 'free',
+      subscription_status: 'completed'
+    })
+    .eq('subscription_id', subscription.id);
+
+  console.log('Subscription completed for subscription:', subscription.id);
+}
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
@@ -1075,6 +1144,196 @@ app.get('/api/user/:email/response-times', async (req, res) => {
     });
   }
 });
+
+app.post('/api/payment/create-subscription', async (req, res) => {
+  try {
+    const { email, plan } = req.body;
+
+    if (!email || !plan) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        message: 'Email and plan are required'
+      });
+    }
+
+    // Check if user exists
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email')
+      .eq('email', email)
+      .single();
+
+    if (userError) {
+      return res.status(404).json({
+        error: 'User not found',
+        message: 'Please create an account first'
+      });
+    }
+
+    // Create subscription plan
+    const subscription = await razorpay.subscriptions.create({
+      plan_id: 'plan_monthly_pro', // Create this plan in Razorpay dashboard
+      customer_notify: 1,
+      quantity: 1,
+      addons: [],
+      notes: {
+        user_id: user.id,
+        email: email,
+        plan_type: plan
+      }
+    });
+
+    // Store subscription details in database
+    const { error: subError } = await supabase
+      .from('subscriptions')
+      .insert([
+        {
+          user_id: user.id,
+          razorpay_subscription_id: subscription.id,
+          plan_type: plan,
+          status: 'created',
+          created_at: new Date().toISOString()
+        }
+      ]);
+
+    if (subError) {
+      console.error('Error saving subscription:', subError);
+    }
+
+    res.json({
+      success: true,
+      subscription: subscription
+    });
+
+  } catch (error) {
+    console.error('Subscription creation error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to create subscription'
+    });
+  }
+});
+
+// Verify payment endpoint
+app.post('/api/payment/verify', async (req, res) => {
+  try {
+    const { 
+      razorpay_payment_id, 
+      razorpay_subscription_id, 
+      razorpay_signature,
+      email 
+    } = req.body;
+
+    // Verify signature
+    const body = razorpay_subscription_id + '|' + razorpay_payment_id;
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(body.toString())
+      .digest('hex');
+
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({
+        error: 'Invalid signature',
+        message: 'Payment verification failed'
+      });
+    }
+
+    // Update user plan to paid
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ plan: 'paid' })
+      .eq('email', email);
+
+    if (updateError) {
+      console.error('Error updating user plan:', updateError);
+      return res.status(500).json({
+        error: 'Database error',
+        message: 'Failed to update user plan'
+      });
+    }
+
+    // Update subscription status
+    const { error: subUpdateError } = await supabase
+      .from('subscriptions')
+      .update({ 
+        status: 'active',
+        razorpay_payment_id: razorpay_payment_id
+      })
+      .eq('razorpay_subscription_id', razorpay_subscription_id);
+
+    if (subUpdateError) {
+      console.error('Error updating subscription:', subUpdateError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Payment verified and plan upgraded successfully'
+    });
+
+  } catch (error) {
+    console.error('Payment verification error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Payment verification failed'
+    });
+  }
+});
+
+// Razorpay webhook endpoint
+app.post('/api/webhooks/razorpay', express.raw({type: 'application/json'}), async (req, res) => {
+  try {
+    const signature = req.headers['x-razorpay-signature'];
+    const body = req.body;
+
+    // Verify webhook signature
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+      .update(body)
+      .digest('hex');
+
+    if (expectedSignature !== signature) {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+
+    const event = JSON.parse(body);
+    const { event: eventType, payload } = event;
+
+    console.log('Received webhook event:', eventType);
+
+    switch (eventType) {
+      case 'subscription.activated':
+        await handleSubscriptionActivated(payload.subscription.entity);
+        break;
+        
+      case 'subscription.cancelled':
+        await handleSubscriptionCancelled(payload.subscription.entity);
+        break;
+        
+      case 'subscription.paused':
+        await handleSubscriptionPaused(payload.subscription.entity);
+        break;
+        
+      case 'subscription.resumed':
+        await handleSubscriptionResumed(payload.subscription.entity);
+        break;
+        
+      case 'subscription.completed':
+        await handleSubscriptionCompleted(payload.subscription.entity);
+        break;
+
+      default:
+        console.log('Unhandled event type:', eventType);
+    }
+
+    res.status(200).json({ received: true });
+
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(400).json({ error: 'Webhook failed' });
+  }
+});
+
+
 app.listen(PORT, () => {
   console.log(`🚀 KeepAlive API server running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
