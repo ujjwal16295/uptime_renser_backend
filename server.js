@@ -1371,7 +1371,7 @@ app.post('/api/payment/create-subscription', async (req, res) => {
     // Create subscription plan
     console.log('Creating Razorpay subscription...');
     const subscription = await razorpay.subscriptions.create({
-      plan_id: 'plan_RDENWi6Pf5ifKI',
+      plan_id: 'plan_RDbhJa1R5Yepct',
       customer_notify: 1,
       total_count: 12,
       quantity: 1,
