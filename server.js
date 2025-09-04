@@ -503,8 +503,8 @@ app.get('/api/credit/:email', async (req, res) => {
 app.post('/api/credit/add', async (req, res) => {
   try {
     const { email } = req.body;
-    const CREDIT_TO_ADD = 43200;
-    const MAX_CREDIT_LIMIT = 70000;
+    const CREDIT_TO_ADD = 2000;
+    const MAX_CREDIT_LIMIT = 25000;
 
     // Validate required fields
     if (!email) {
@@ -522,27 +522,48 @@ app.post('/api/credit/add', async (req, res) => {
       });
     }
 
-    // Check if user exists and get current credit
-    const { data: existingUser, error: checkError } = await supabase
-      .from('users')
-      .select('id, email, credit')
-      .eq('email', email)
-      .single();
+// Check if user exists and get current credit + last credit added time
+const { data: existingUser, error: checkError } = await supabase
+  .from('users')
+  .select('id, email, credit, last_credit_added_at')
+  .eq('email', email)
+  .single();
 
-    if (checkError) {
-      if (checkError.code === 'PGRST116') {
-        return res.status(404).json({
-          error: 'User not found',
-          message: 'No user found with this email address. Please add a URL first to create an account.'
-        });
+if (checkError) {
+  if (checkError.code === 'PGRST116') {
+    return res.status(404).json({
+      error: 'User not found',
+      message: 'No user found with this email address. Please add a URL first to create an account.'
+    });
+  }
+  
+  console.error('Error checking existing user:', checkError);
+  return res.status(500).json({
+    error: 'Database error',
+    message: 'Failed to check user existence'
+  });
+}
+
+// Check if user has already added credits today
+if (existingUser.last_credit_added_at) {
+  const lastCreditDate = new Date(existingUser.last_credit_added_at);
+  const today = new Date();
+  const timeDiff = today - lastCreditDate;
+  const hoursSinceLastCredit = timeDiff / (1000 * 60 * 60);
+  
+  if (hoursSinceLastCredit < 24) {
+    const hoursRemaining = Math.ceil(24 - hoursSinceLastCredit);
+    return res.status(429).json({
+      error: 'Daily limit reached',
+      message: `You can only add credits once per day. Please try again in ${hoursRemaining} hours.`,
+      data: {
+        last_credit_added: existingUser.last_credit_added_at,
+        hours_remaining: hoursRemaining,
+        can_add_again_at: new Date(lastCreditDate.getTime() + 24 * 60 * 60 * 1000)
       }
-      
-      console.error('Error checking existing user:', checkError);
-      return res.status(500).json({
-        error: 'Database error',
-        message: 'Failed to check user existence'
-      });
-    }
+    });
+  }
+}
 
     // Calculate new credit total
     const newCredit = existingUser.credit + CREDIT_TO_ADD;
@@ -564,13 +585,16 @@ app.post('/api/credit/add', async (req, res) => {
       });
     }
 
-    // Update user's credit
-    const { data: updatedUser, error: updateError } = await supabase
-      .from('users')
-      .update({ credit: newCredit })
-      .eq('email', email)
-      .select('email, credit, created_at')
-      .single();
+// Update user's credit and last_credit_added_at timestamp
+const { data: updatedUser, error: updateError } = await supabase
+  .from('users')
+  .update({ 
+    credit: newCredit,
+    last_credit_added_at: new Date().toISOString()
+  })
+  .eq('email', email)
+  .select('email, credit, created_at, last_credit_added_at')
+  .single();
 
     if (updateError) {
       console.error('Error updating user credit:', updateError);
@@ -597,8 +621,10 @@ app.post('/api/credit/add', async (req, res) => {
         added_credit: CREDIT_TO_ADD,
         new_credit: updatedUser.credit,
         created_at: updatedUser.created_at,
+        last_credit_added_at: updatedUser.last_credit_added_at,
         email_sent: emailSent,
-        remaining_capacity: MAX_CREDIT_LIMIT - updatedUser.credit
+        remaining_capacity: MAX_CREDIT_LIMIT - updatedUser.credit,
+        next_credit_available_at: new Date(Date.now() + 24 * 60 * 60 * 1000)
       }
     });
 
@@ -708,7 +734,7 @@ app.post('/api/urls', async (req, res) => {
         .insert([
           {
             email: email,
-            credit: 43200, // Default credit value
+            credit: 21600, // Default credit value
           }
         ])
         .select('id, email, credit, created_at')
