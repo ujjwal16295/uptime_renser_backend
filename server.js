@@ -1149,8 +1149,14 @@ app.get('/api/user/:email/response-times', async (req, res) => {
 app.post('/api/payment/create-subscription', async (req, res) => {
   try {
     const { email, plan } = req.body;
+    
+    console.log('=== CREATE SUBSCRIPTION REQUEST ===');
+    console.log('Request body:', req.body);
+    console.log('Email:', email);
+    console.log('Plan:', plan);
 
     if (!email || !plan) {
+      console.log('ERROR: Missing required fields');
       return res.status(400).json({
         error: 'Missing required fields',
         message: 'Email and plan are required'
@@ -1158,6 +1164,7 @@ app.post('/api/payment/create-subscription', async (req, res) => {
     }
 
     // Check if user exists
+    console.log('Checking if user exists with email:', email);
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, email')
@@ -1165,15 +1172,25 @@ app.post('/api/payment/create-subscription', async (req, res) => {
       .single();
 
     if (userError) {
+      console.log('=== USER LOOKUP ERROR ===');
+      console.log('Full userError object:', JSON.stringify(userError, null, 2));
+      console.log('Error message:', userError.message);
+      console.log('Error details:', userError.details);
+      console.log('Error hint:', userError.hint);
+      console.log('Error code:', userError.code);
+      
       return res.status(404).json({
         error: 'User not found',
         message: 'Please create an account first'
       });
     }
 
+    console.log('User found:', user);
+
     // Create subscription plan
+    console.log('Creating Razorpay subscription...');
     const subscription = await razorpay.subscriptions.create({
-      plan_id: 'plan_monthly_pro', // Create this plan in Razorpay dashboard
+      plan_id: 'plan_RDENWi6Pf5ifKI', // Create this plan in Razorpay dashboard
       customer_notify: 1,
       quantity: 1,
       addons: [],
@@ -1184,33 +1201,63 @@ app.post('/api/payment/create-subscription', async (req, res) => {
       }
     });
 
+    console.log('Razorpay subscription created successfully:', subscription);
+
     // Store subscription details in database
+    console.log('Saving subscription to database...');
+    const subscriptionData = {
+      user_id: user.id,
+      razorpay_subscription_id: subscription.id,
+      plan_type: plan,
+      status: 'created',
+      created_at: new Date().toISOString()
+    };
+    
+    console.log('Subscription data to insert:', subscriptionData);
+    
     const { error: subError } = await supabase
       .from('subscriptions')
-      .insert([
-        {
-          user_id: user.id,
-          razorpay_subscription_id: subscription.id,
-          plan_type: plan,
-          status: 'created',
-          created_at: new Date().toISOString()
-        }
-      ]);
+      .insert([subscriptionData]);
 
     if (subError) {
-      console.error('Error saving subscription:', subError);
+      console.log('=== SUBSCRIPTION DATABASE ERROR ===');
+      console.log('Full subError object:', JSON.stringify(subError, null, 2));
+      console.log('Error message:', subError.message);
+      console.log('Error details:', subError.details);
+      console.log('Error hint:', subError.hint);
+      console.log('Error code:', subError.code);
+    } else {
+      console.log('Subscription saved to database successfully');
     }
 
+    console.log('=== SUBSCRIPTION CREATION SUCCESSFUL ===');
     res.json({
       success: true,
       subscription: subscription
     });
 
   } catch (error) {
-    console.error('Subscription creation error:', error);
+    console.log('=== MAIN CATCH BLOCK ERROR ===');
+    console.log('Full error object:', JSON.stringify(error, null, 2));
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+    
+    // If it's a Razorpay error, log additional details
+    if (error.statusCode) {
+      console.log('Razorpay error statusCode:', error.statusCode);
+    }
+    if (error.error) {
+      console.log('Razorpay error details:', JSON.stringify(error.error, null, 2));
+    }
+    
     res.status(500).json({
       error: 'Internal server error',
-      message: 'Failed to create subscription'
+      message: 'Failed to create subscription',
+      details: error.message,
+      errorName: error.name,
+      ...(error.statusCode && { razorpayStatusCode: error.statusCode }),
+      ...(error.error && { razorpayError: error.error })
     });
   }
 });
