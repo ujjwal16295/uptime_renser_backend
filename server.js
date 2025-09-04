@@ -1187,7 +1187,120 @@ app.get('/api/user/:email/response-times', async (req, res) => {
     });
   }
 });
+app.post('/api/subscription/cancel', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    console.log('=== CANCEL SUBSCRIPTION REQUEST ===');
+    console.log('Request body:', req.body);
+    console.log('Email:', email);
 
+    if (!email) {
+      console.log('ERROR: Missing email');
+      return res.status(400).json({
+        error: 'Missing required fields',
+        message: 'Email is required'
+      });
+    }
+
+    // Check if user exists and get their subscription details
+    console.log('Checking if user exists with email:', email);
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, subscription_id, subscription_status, plan')
+      .eq('email', email)
+      .single();
+
+    if (userError) {
+      console.log('=== USER LOOKUP ERROR ===');
+      console.log('Full userError object:', JSON.stringify(userError, null, 2));
+      
+      return res.status(404).json({
+        error: 'User not found',
+        message: 'User account not found'
+      });
+    }
+
+    console.log('User found:', user);
+
+    // Check if user has an active subscription
+    if (!user.subscription_id) {
+      console.log('ERROR: User has no subscription');
+      return res.status(400).json({
+        error: 'No subscription found',
+        message: 'User does not have an active subscription'
+      });
+    }
+
+    if (user.subscription_status === 'cancelled') {
+      console.log('ERROR: Subscription already cancelled');
+      return res.status(400).json({
+        error: 'Already cancelled',
+        message: 'Subscription is already cancelled'
+      });
+    }
+
+    // Cancel subscription in Razorpay
+    console.log('Cancelling Razorpay subscription:', user.subscription_id);
+    try {
+      const cancelledSubscription = await razorpay.subscriptions.cancel(user.subscription_id, {
+        cancel_at_cycle_end: 1 // This ensures user has access until the end of billing period
+      });
+
+      console.log('Razorpay subscription cancelled successfully:', cancelledSubscription);
+    } catch (razorpayError) {
+      console.log('=== RAZORPAY CANCELLATION ERROR ===');
+      console.log('Full razorpayError object:', JSON.stringify(razorpayError, null, 2));
+      
+      // If Razorpay cancellation fails, we still want to update our database
+      // as the user might have already cancelled through Razorpay dashboard
+      console.log('Warning: Razorpay cancellation failed, but continuing with database update');
+    }
+
+    // Update user subscription status in database
+    console.log('Updating user subscription status in database...');
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        subscription_status: 'cancelled'
+        // Note: We don't immediately change the plan to 'free' here because
+        // the user should retain access until the end of the billing period
+      })
+      .eq('id', user.id);
+
+    if (updateError) {
+      console.log('=== USER UPDATE ERROR ===');
+      console.log('Full updateError object:', JSON.stringify(updateError, null, 2));
+      
+      return res.status(500).json({
+        error: 'Database update failed',
+        message: 'Failed to update subscription status'
+      });
+    }
+
+    console.log('User subscription status updated successfully');
+
+    console.log('=== SUBSCRIPTION CANCELLATION SUCCESSFUL ===');
+    res.json({
+      success: true,
+      message: 'Subscription cancelled successfully',
+      details: 'You will continue to have access to paid features until the end of your current billing period'
+    });
+
+  } catch (error) {
+    console.log('=== MAIN CATCH BLOCK ERROR ===');
+    console.log('Full error object:', JSON.stringify(error, null, 2));
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+    
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to cancel subscription',
+      details: error.message
+    });
+  }
+});
 app.post('/api/payment/create-subscription', async (req, res) => {
   try {
     const { email, plan } = req.body;
