@@ -3,6 +3,8 @@ const cors = require('cors');
 const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 const Razorpay = require('razorpay');
+const crypto = require('crypto');
+
 
 require('dotenv').config();
 
@@ -340,6 +342,9 @@ const getUserWithLinks = async (email) => {
 };
 
 async function handleSubscriptionActivated(subscription) {
+  console.log('=== HANDLING SUBSCRIPTION ACTIVATED ===');
+  console.log('Subscription object:', JSON.stringify(subscription, null, 2));
+
   const { error } = await supabase
     .from('users')
     .update({ 
@@ -347,11 +352,19 @@ async function handleSubscriptionActivated(subscription) {
       subscription_status: 'active'
     })
     .eq('subscription_id', subscription.id);
-    
-  console.log('Subscription activated for subscription:', subscription.id);
+
+  if (error) {
+    console.log('ERROR: Failed to activate subscription in database');
+    console.log('Database error:', JSON.stringify(error, null, 2));
+  } else {
+    console.log('SUCCESS: Subscription activated for subscription:', subscription.id);
+  }
 }
 
 async function handleSubscriptionCancelled(subscription) {
+  console.log('=== HANDLING SUBSCRIPTION CANCELLED ===');
+  console.log('Subscription object:', JSON.stringify(subscription, null, 2));
+
   const { error } = await supabase
     .from('users')
     .update({ 
@@ -359,11 +372,19 @@ async function handleSubscriptionCancelled(subscription) {
       subscription_status: 'cancelled'
     })
     .eq('subscription_id', subscription.id);
-
-  console.log('Subscription cancelled for subscription:', subscription.id);
+   
+  if (error) {
+    console.log('ERROR: Failed to cancel subscription in database');
+    console.log('Database error:', JSON.stringify(error, null, 2));
+  } else {
+    console.log('SUCCESS: Subscription cancelled for subscription:', subscription.id);
+  }
 }
 
 async function handleSubscriptionPaused(subscription) {
+  console.log('=== HANDLING SUBSCRIPTION PAUSED ===');
+  console.log('Subscription object:', JSON.stringify(subscription, null, 2));
+
   const { error } = await supabase
     .from('users')
     .update({ 
@@ -371,11 +392,19 @@ async function handleSubscriptionPaused(subscription) {
       subscription_status: 'paused'
     })
     .eq('subscription_id', subscription.id);
-
-  console.log('Subscription paused for subscription:', subscription.id);
+   
+  if (error) {
+    console.log('ERROR: Failed to pause subscription in database');
+    console.log('Database error:', JSON.stringify(error, null, 2));
+  } else {
+    console.log('SUCCESS: Subscription paused for subscription:', subscription.id);
+  }
 }
 
 async function handleSubscriptionResumed(subscription) {
+  console.log('=== HANDLING SUBSCRIPTION RESUMED ===');
+  console.log('Subscription object:', JSON.stringify(subscription, null, 2));
+
   const { error } = await supabase
     .from('users')
     .update({ 
@@ -383,11 +412,19 @@ async function handleSubscriptionResumed(subscription) {
       subscription_status: 'active'
     })
     .eq('subscription_id', subscription.id);
-
-  console.log('Subscription resumed for subscription:', subscription.id);
+   
+  if (error) {
+    console.log('ERROR: Failed to resume subscription in database');
+    console.log('Database error:', JSON.stringify(error, null, 2));
+  } else {
+    console.log('SUCCESS: Subscription resumed for subscription:', subscription.id);
+  }
 }
 
 async function handleSubscriptionCompleted(subscription) {
+  console.log('=== HANDLING SUBSCRIPTION COMPLETED ===');
+  console.log('Subscription object:', JSON.stringify(subscription, null, 2));
+
   const { error } = await supabase
     .from('users')
     .update({ 
@@ -395,8 +432,13 @@ async function handleSubscriptionCompleted(subscription) {
       subscription_status: 'completed'
     })
     .eq('subscription_id', subscription.id);
-
-  console.log('Subscription completed for subscription:', subscription.id);
+   
+  if (error) {
+    console.log('ERROR: Failed to complete subscription in database');
+    console.log('Database error:', JSON.stringify(error, null, 2));
+  } else {
+    console.log('SUCCESS: Subscription completed for subscription:', subscription.id);
+  }
 }
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -1190,8 +1232,9 @@ app.post('/api/payment/create-subscription', async (req, res) => {
     // Create subscription plan
     console.log('Creating Razorpay subscription...');
     const subscription = await razorpay.subscriptions.create({
-      plan_id: 'plan_RDENWi6Pf5ifKI', // Create this plan in Razorpay dashboard
+      plan_id: 'plan_RDENWi6Pf5ifKI',
       customer_notify: 1,
+      total_count: 12,
       quantity: 1,
       addons: [],
       notes: {
@@ -1203,31 +1246,28 @@ app.post('/api/payment/create-subscription', async (req, res) => {
 
     console.log('Razorpay subscription created successfully:', subscription);
 
-    // Store subscription details in database
-    console.log('Saving subscription to database...');
-    const subscriptionData = {
-      user_id: user.id,
-      razorpay_subscription_id: subscription.id,
-      plan_type: plan,
-      status: 'created',
-      created_at: new Date().toISOString()
-    };
-    
-    console.log('Subscription data to insert:', subscriptionData);
-    
-    const { error: subError } = await supabase
-      .from('subscriptions')
-      .insert([subscriptionData]);
+    // Update user with subscription details
+    console.log('Updating user with subscription details...');
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        subscription_id: subscription.id,
+        subscription_status: 'created'
+      })
+      .eq('id', user.id);
 
-    if (subError) {
-      console.log('=== SUBSCRIPTION DATABASE ERROR ===');
-      console.log('Full subError object:', JSON.stringify(subError, null, 2));
-      console.log('Error message:', subError.message);
-      console.log('Error details:', subError.details);
-      console.log('Error hint:', subError.hint);
-      console.log('Error code:', subError.code);
+    if (updateError) {
+      console.log('=== USER UPDATE ERROR ===');
+      console.log('Full updateError object:', JSON.stringify(updateError, null, 2));
+      console.log('Error message:', updateError.message);
+      console.log('Error details:', updateError.details);
+      console.log('Error hint:', updateError.hint);
+      console.log('Error code:', updateError.code);
+      
+      // Even if DB update fails, we can still return the subscription
+      console.log('Warning: Failed to update user with subscription details, but subscription created');
     } else {
-      console.log('Subscription saved to database successfully');
+      console.log('User updated with subscription details successfully');
     }
 
     console.log('=== SUBSCRIPTION CREATION SUCCESSFUL ===');
@@ -1243,7 +1283,6 @@ app.post('/api/payment/create-subscription', async (req, res) => {
     console.log('Error message:', error.message);
     console.log('Error stack:', error.stack);
     
-    // If it's a Razorpay error, log additional details
     if (error.statusCode) {
       console.log('Razorpay error statusCode:', error.statusCode);
     }
@@ -1262,110 +1301,76 @@ app.post('/api/payment/create-subscription', async (req, res) => {
   }
 });
 
-// Verify payment endpoint
-app.post('/api/payment/verify', async (req, res) => {
-  try {
-    const { 
-      razorpay_payment_id, 
-      razorpay_subscription_id, 
-      razorpay_signature,
-      email 
-    } = req.body;
-
-    // Verify signature
-    const body = razorpay_subscription_id + '|' + razorpay_payment_id;
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(body.toString())
-      .digest('hex');
-
-    if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({
-        error: 'Invalid signature',
-        message: 'Payment verification failed'
-      });
-    }
-
-    // Update user plan to paid
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({ plan: 'paid' })
-      .eq('email', email);
-
-    if (updateError) {
-      console.error('Error updating user plan:', updateError);
-      return res.status(500).json({
-        error: 'Database error',
-        message: 'Failed to update user plan'
-      });
-    }
-
-    // Update subscription status
-    const { error: subUpdateError } = await supabase
-      .from('subscriptions')
-      .update({ 
-        status: 'active',
-        razorpay_payment_id: razorpay_payment_id
-      })
-      .eq('razorpay_subscription_id', razorpay_subscription_id);
-
-    if (subUpdateError) {
-      console.error('Error updating subscription:', subUpdateError);
-    }
-
-    res.json({
-      success: true,
-      message: 'Payment verified and plan upgraded successfully'
-    });
-
-  } catch (error) {
-    console.error('Payment verification error:', error);
-    res.status(500).json({
-      error: 'Internal server error',
-      message: 'Payment verification failed'
-    });
-  }
-});
-
-// Razorpay webhook endpoint
+// FIXED WEBHOOK ENDPOINT
 app.post('/api/webhooks/razorpay', express.raw({type: 'application/json'}), async (req, res) => {
   try {
+    console.log('=== WEBHOOK REQUEST RECEIVED ===');
+    console.log('Headers:', req.headers);
+    console.log('Body type:', typeof req.body);
+    console.log('Body length:', req.body.length);
+
     const signature = req.headers['x-razorpay-signature'];
     const body = req.body;
 
+    console.log('Webhook signature:', signature);
+
+    if (!signature) {
+      console.log('ERROR: No signature in webhook headers');
+      return res.status(400).json({ error: 'Missing signature' });
+    }
+
+    // Convert body to string if it's a Buffer (which it should be with express.raw)
+    const bodyString = Buffer.isBuffer(body) ? body.toString() : JSON.stringify(body);
+    console.log('Body converted to string, length:', bodyString.length);
+
     // Verify webhook signature
+    console.log('Verifying webhook signature...');
     const expectedSignature = crypto
       .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
-      .update(body)
+      .update(bodyString)
       .digest('hex');
 
+    console.log('Expected webhook signature:', expectedSignature);
+    console.log('Webhook signatures match:', expectedSignature === signature);
+
     if (expectedSignature !== signature) {
+      console.log('ERROR: Webhook signature verification failed');
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
-    const event = JSON.parse(body);
+    console.log('Webhook signature verification successful');
+
+    // Parse the event
+    const event = JSON.parse(bodyString);
     const { event: eventType, payload } = event;
 
-    console.log('Received webhook event:', eventType);
+    console.log('=== WEBHOOK EVENT DETAILS ===');
+    console.log('Event type:', eventType);
+    console.log('Payload:', JSON.stringify(payload, null, 2));
 
     switch (eventType) {
       case 'subscription.activated':
+        console.log('Processing subscription.activated event');
         await handleSubscriptionActivated(payload.subscription.entity);
         break;
         
       case 'subscription.cancelled':
+        console.log('Processing subscription.cancelled event');
         await handleSubscriptionCancelled(payload.subscription.entity);
         break;
         
       case 'subscription.paused':
+        console.log('Processing subscription.paused event');
         await handleSubscriptionPaused(payload.subscription.entity);
         break;
         
       case 'subscription.resumed':
+        console.log('Processing subscription.resumed event');
         await handleSubscriptionResumed(payload.subscription.entity);
         break;
         
       case 'subscription.completed':
+        console.log('Processing subscription.completed event');
         await handleSubscriptionCompleted(payload.subscription.entity);
         break;
 
@@ -1373,13 +1378,21 @@ app.post('/api/webhooks/razorpay', express.raw({type: 'application/json'}), asyn
         console.log('Unhandled event type:', eventType);
     }
 
+    console.log('=== WEBHOOK PROCESSING SUCCESSFUL ===');
     res.status(200).json({ received: true });
 
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.log('=== WEBHOOK ERROR ===');
+    console.log('Full error object:', JSON.stringify(error, null, 2));
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+    console.log('Request body (raw):', req.body);
+    
     res.status(400).json({ error: 'Webhook failed' });
   }
 });
+
 
 
 app.listen(PORT, () => {
