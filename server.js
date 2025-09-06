@@ -50,6 +50,82 @@ app.use(cors({
   },
   credentials: true // Enable if you need to send cookies/auth headers
 }));
+
+// Paddle webhook endpoint
+app.post('/api/webhooks/paddle', express.raw({type: 'application/json'}), async (req, res) => {
+  try {
+    console.log('=== PADDLE WEBHOOK REQUEST RECEIVED ===');
+    console.log('Headers:', req.headers);
+    console.log('Body type:', typeof req.body);
+    console.log('Body length:', req.body.length);
+
+    const signature = req.headers['paddle-signature'];
+    const rawRequestBody = req.body.toString();
+    const secretKey = process.env.PADDLE_WEBHOOK_SECRET || '';
+
+    console.log('Paddle signature:', signature);
+
+    if (!signature || !rawRequestBody) {
+      console.log('ERROR: Signature or request body missing');
+      return res.status(400).json({ error: 'Invalid webhook request' });
+    }
+
+    // Verify webhook signature using Paddle SDK
+    console.log('Verifying webhook signature...');
+    const eventData = await paddle.webhooks.unmarshal(rawRequestBody, secretKey, signature);
+    
+    console.log('Webhook signature verification successful');
+    console.log('=== PADDLE WEBHOOK EVENT DETAILS ===');
+    console.log('Event type:', eventData.eventType);
+    console.log('Event data:', JSON.stringify(eventData.data, null, 2));
+
+    // Handle different event types
+    switch (eventData.eventType) {
+      case EventName.SubscriptionCreated:
+      case EventName.SubscriptionActivated:
+        console.log('Processing subscription created/activated event');
+        await handleSubscriptionActivated(eventData.data);
+        break;
+        
+      case EventName.SubscriptionCanceled:
+        console.log('Processing subscription cancelled event');
+        await handleSubscriptionCancelled(eventData.data);
+        break;
+        
+      case EventName.SubscriptionPaused:
+        console.log('Processing subscription paused event');
+        await handleSubscriptionPaused(eventData.data);
+        break;
+        
+      case EventName.SubscriptionResumed:
+        console.log('Processing subscription resumed event');
+        await handleSubscriptionResumed(eventData.data);
+        break;
+        
+      case EventName.SubscriptionUpdated:
+        console.log('Processing subscription updated event');
+        await handleSubscriptionActivated(eventData.data); // Treat as activation
+        break;
+
+      default:
+        console.log('Unhandled event type:', eventData.eventType);
+    }
+
+    console.log('=== PADDLE WEBHOOK PROCESSING SUCCESSFUL ===');
+    res.status(200).json({ received: true });
+
+  } catch (error) {
+    console.log('=== PADDLE WEBHOOK ERROR ===');
+    console.log('Full error object:', JSON.stringify(error, null, 2));
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+    console.log('Request body (raw):', req.body);
+    
+    res.status(400).json({ error: 'Webhook failed' });
+  }
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -645,80 +721,7 @@ app.post('/api/payment/create-subscription', async (req, res) => {
   }
 });
 
-// Paddle webhook endpoint
-app.post('/api/webhooks/paddle', express.raw({type: 'application/json'}), async (req, res) => {
-  try {
-    console.log('=== PADDLE WEBHOOK REQUEST RECEIVED ===');
-    console.log('Headers:', req.headers);
-    console.log('Body type:', typeof req.body);
-    console.log('Body length:', req.body.length);
 
-    const signature = req.headers['paddle-signature'];
-    const rawRequestBody = req.body.toString();
-    const secretKey = process.env.PADDLE_WEBHOOK_SECRET || '';
-
-    console.log('Paddle signature:', signature);
-
-    if (!signature || !rawRequestBody) {
-      console.log('ERROR: Signature or request body missing');
-      return res.status(400).json({ error: 'Invalid webhook request' });
-    }
-
-    // Verify webhook signature using Paddle SDK
-    console.log('Verifying webhook signature...');
-    const eventData = await paddle.webhooks.unmarshal(rawRequestBody, secretKey, signature);
-    
-    console.log('Webhook signature verification successful');
-    console.log('=== PADDLE WEBHOOK EVENT DETAILS ===');
-    console.log('Event type:', eventData.eventType);
-    console.log('Event data:', JSON.stringify(eventData.data, null, 2));
-
-    // Handle different event types
-    switch (eventData.eventType) {
-      case EventName.SubscriptionCreated:
-      case EventName.SubscriptionActivated:
-        console.log('Processing subscription created/activated event');
-        await handleSubscriptionActivated(eventData.data);
-        break;
-        
-      case EventName.SubscriptionCanceled:
-        console.log('Processing subscription cancelled event');
-        await handleSubscriptionCancelled(eventData.data);
-        break;
-        
-      case EventName.SubscriptionPaused:
-        console.log('Processing subscription paused event');
-        await handleSubscriptionPaused(eventData.data);
-        break;
-        
-      case EventName.SubscriptionResumed:
-        console.log('Processing subscription resumed event');
-        await handleSubscriptionResumed(eventData.data);
-        break;
-        
-      case EventName.SubscriptionUpdated:
-        console.log('Processing subscription updated event');
-        await handleSubscriptionActivated(eventData.data); // Treat as activation
-        break;
-
-      default:
-        console.log('Unhandled event type:', eventData.eventType);
-    }
-
-    console.log('=== PADDLE WEBHOOK PROCESSING SUCCESSFUL ===');
-    res.status(200).json({ received: true });
-
-  } catch (error) {
-    console.log('=== PADDLE WEBHOOK ERROR ===');
-    console.log('Full error object:', JSON.stringify(error, null, 2));
-    console.log('Error name:', error.name);
-    console.log('Error message:', error.message);
-    console.log('Error stack:', error.stack);
-    console.log('Request body (raw):', req.body);
-    
-    res.status(400).json({ error: 'Webhook failed' });
-  }
-});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
