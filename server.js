@@ -2,8 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
-const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const { Paddle, EventName } = require('@paddle/paddle-node-sdk');
+
 
 
 require('dotenv').config();
@@ -28,11 +29,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
-
+const paddle = new Paddle(process.env.PADDLE_API_KEY);
 
 
 // Middleware
@@ -345,19 +342,44 @@ async function handleSubscriptionActivated(subscription) {
   console.log('=== HANDLING SUBSCRIPTION ACTIVATED ===');
   console.log('Subscription object:', JSON.stringify(subscription, null, 2));
 
+  const userId = subscription.customData?.userId;
+  const email = subscription.customData?.email;
+
+  if (!userId && !email) {
+    console.log('ERROR: No user identifier found in subscription data');
+    return;
+  }
+
+  // Find user by userId first, then by email as fallback
+  let userQuery = supabase.from('users').select('id, email');
+  if (userId) {
+    userQuery = userQuery.eq('id', userId);
+  } else {
+    userQuery = userQuery.eq('email', email);
+  }
+
+  const { data: user, error: userError } = await userQuery.single();
+
+  if (userError || !user) {
+    console.log('ERROR: User not found for subscription activation');
+    console.log('User lookup error:', JSON.stringify(userError, null, 2));
+    return;
+  }
+
   const { error } = await supabase
     .from('users')
     .update({ 
       plan: 'paid',
-      subscription_status: 'active'
+      subscription_status: 'active',
+      subscription_id: subscription.id
     })
-    .eq('subscription_id', subscription.id);
+    .eq('id', user.id);
 
   if (error) {
     console.log('ERROR: Failed to activate subscription in database');
     console.log('Database error:', JSON.stringify(error, null, 2));
   } else {
-    console.log('SUCCESS: Subscription activated for subscription:', subscription.id);
+    console.log('SUCCESS: Subscription activated for user:', user.email);
   }
 }
 
@@ -440,6 +462,291 @@ async function handleSubscriptionCompleted(subscription) {
     console.log('SUCCESS: Subscription completed for subscription:', subscription.id);
   }
 }
+
+// Cancel subscription endpoint
+app.post('/api/subscription/cancel', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    console.log('=== CANCEL SUBSCRIPTION REQUEST ===');
+    console.log('Request body:', req.body);
+    console.log('Email:', email);
+
+    if (!email) {
+      console.log('ERROR: Missing email');
+      return res.status(400).json({
+        error: 'Missing required fields',
+        message: 'Email is required'
+      });
+    }
+
+    // Check if user exists and get their subscription details
+    console.log('Checking if user exists with email:', email);
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, subscription_id, subscription_status, plan')
+      .eq('email', email)
+      .single();
+
+    if (userError) {
+      console.log('=== USER LOOKUP ERROR ===');
+      console.log('Full userError object:', JSON.stringify(userError, null, 2));
+      
+      return res.status(404).json({
+        error: 'User not found',
+        message: 'User account not found'
+      });
+    }
+
+    console.log('User found:', user);
+
+    // Check if user has an active subscription
+    if (!user.subscription_id) {
+      console.log('ERROR: User has no subscription');
+      return res.status(400).json({
+        error: 'No subscription found',
+        message: 'User does not have an active subscription'
+      });
+    }
+
+    if (user.subscription_status === 'cancelled') {
+      console.log('ERROR: Subscription already cancelled');
+      return res.status(400).json({
+        error: 'Already cancelled',
+        message: 'Subscription is already cancelled'
+      });
+    }
+
+    // Cancel subscription in Paddle
+    console.log('Cancelling Paddle subscription:', user.subscription_id);
+    try {
+      const cancelledSubscription = await paddle.subscriptions.cancel(user.subscription_id, {
+        effectiveFrom: 'next_billing_period' // Cancel at end of billing period
+      });
+
+      console.log('Paddle subscription cancelled successfully:', cancelledSubscription);
+    } catch (paddleError) {
+      console.log('=== PADDLE CANCELLATION ERROR ===');
+      console.log('Full paddleError object:', JSON.stringify(paddleError, null, 2));
+      
+      // If Paddle cancellation fails, we still want to update our database
+      // as the user might have already cancelled through Paddle dashboard
+      console.log('Warning: Paddle cancellation failed, but continuing with database update');
+    }
+
+    // Update user subscription status in database
+    console.log('Updating user subscription status in database...');
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        subscription_status: 'cancelled'
+        // Note: We don't immediately change the plan to 'free' here because
+        // the user should retain access until the end of the billing period
+      })
+      .eq('id', user.id);
+
+    if (updateError) {
+      console.log('=== USER UPDATE ERROR ===');
+      console.log('Full updateError object:', JSON.stringify(updateError, null, 2));
+      
+      return res.status(500).json({
+        error: 'Database update failed',
+        message: 'Failed to update subscription status'
+      });
+    }
+
+    console.log('User subscription status updated successfully');
+
+    console.log('=== SUBSCRIPTION CANCELLATION SUCCESSFUL ===');
+    res.json({
+      success: true,
+      message: 'Subscription cancelled successfully',
+      details: 'You will continue to have access to paid features until the end of your current billing period'
+    });
+
+  } catch (error) {
+    console.log('=== MAIN CATCH BLOCK ERROR ===');
+    console.log('Full error object:', JSON.stringify(error, null, 2));
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+    
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to cancel subscription',
+      details: error.message
+    });
+  }
+});
+
+// Create subscription endpoint
+app.post('/api/payment/create-subscription', async (req, res) => {
+  try {
+    const { email, plan } = req.body;
+    
+    console.log('=== CREATE SUBSCRIPTION REQUEST ===');
+    console.log('Request body:', req.body);
+    console.log('Email:', email);
+    console.log('Plan:', plan);
+
+    if (!email || !plan) {
+      console.log('ERROR: Missing required fields');
+      return res.status(400).json({
+        error: 'Missing required fields',
+        message: 'Email and plan are required'
+      });
+    }
+
+    // Check if user exists
+    console.log('Checking if user exists with email:', email);
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email')
+      .eq('email', email)
+      .single();
+
+    if (userError) {
+      console.log('=== USER LOOKUP ERROR ===');
+      console.log('Full userError object:', JSON.stringify(userError, null, 2));
+      console.log('Error message:', userError.message);
+      console.log('Error details:', userError.details);
+      console.log('Error hint:', userError.hint);
+      console.log('Error code:', userError.code);
+      
+      return res.status(404).json({
+        error: 'User not found',
+        message: 'Please create an account first'
+      });
+    }
+
+    console.log('User found:', user);
+
+    // Return price ID for Paddle checkout (you'll need to replace with your actual price ID)
+    const priceId = process.env.PADDLE_PRICE_ID || 'pri_01k4ek5kezcsa14ezw9whm5yjs';
+
+    console.log('Returning price ID for Paddle checkout:', priceId);
+
+    // Update user with pending subscription status
+    console.log('Updating user with pending subscription status...');
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        subscription_status: 'pending'
+      })
+      .eq('id', user.id);
+
+    if (updateError) {
+      console.log('=== USER UPDATE ERROR ===');
+      console.log('Full updateError object:', JSON.stringify(updateError, null, 2));
+      console.log('Warning: Failed to update user with pending status, but continuing');
+    } else {
+      console.log('User updated with pending subscription status successfully');
+    }
+
+    console.log('=== SUBSCRIPTION CREATION SUCCESSFUL ===');
+    res.json({
+      success: true,
+      priceId: priceId
+    });
+
+  } catch (error) {
+    console.log('=== MAIN CATCH BLOCK ERROR ===');
+    console.log('Full error object:', JSON.stringify(error, null, 2));
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+    
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to create subscription',
+      details: error.message,
+      errorName: error.name
+    });
+  }
+});
+
+// Paddle webhook endpoint
+app.post('/api/webhooks/paddle', express.raw({type: 'application/json'}), async (req, res) => {
+  try {
+    console.log('=== PADDLE WEBHOOK REQUEST RECEIVED ===');
+    console.log('Headers:', req.headers);
+    console.log('Body type:', typeof req.body);
+    console.log('Body length:', req.body.length);
+
+    const signature = req.headers['paddle-signature'];
+    const rawRequestBody = req.body.toString();
+    const secretKey = process.env.PADDLE_WEBHOOK_SECRET || '';
+
+    console.log('Paddle signature:', signature);
+
+    if (!signature || !rawRequestBody) {
+      console.log('ERROR: Signature or request body missing');
+      return res.status(400).json({ error: 'Invalid webhook request' });
+    }
+
+    // Verify webhook signature using Paddle SDK
+    console.log('Verifying webhook signature...');
+    const eventData = await paddle.webhooks.unmarshal(rawRequestBody, secretKey, signature);
+    
+    console.log('Webhook signature verification successful');
+    console.log('=== PADDLE WEBHOOK EVENT DETAILS ===');
+    console.log('Event type:', eventData.eventType);
+    console.log('Event data:', JSON.stringify(eventData.data, null, 2));
+
+    // Handle different event types
+    switch (eventData.eventType) {
+      case EventName.SubscriptionCreated:
+      case EventName.SubscriptionActivated:
+        console.log('Processing subscription created/activated event');
+        await handleSubscriptionActivated(eventData.data);
+        break;
+        
+      case EventName.SubscriptionCanceled:
+        console.log('Processing subscription cancelled event');
+        await handleSubscriptionCancelled(eventData.data);
+        break;
+        
+      case EventName.SubscriptionPaused:
+        console.log('Processing subscription paused event');
+        await handleSubscriptionPaused(eventData.data);
+        break;
+        
+      case EventName.SubscriptionResumed:
+        console.log('Processing subscription resumed event');
+        await handleSubscriptionResumed(eventData.data);
+        break;
+        
+      case EventName.SubscriptionUpdated:
+        console.log('Processing subscription updated event');
+        await handleSubscriptionActivated(eventData.data); // Treat as activation
+        break;
+
+      default:
+        console.log('Unhandled event type:', eventData.eventType);
+    }
+
+    console.log('=== PADDLE WEBHOOK PROCESSING SUCCESSFUL ===');
+    res.status(200).json({ received: true });
+
+  } catch (error) {
+    console.log('=== PADDLE WEBHOOK ERROR ===');
+    console.log('Full error object:', JSON.stringify(error, null, 2));
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+    console.log('Request body (raw):', req.body);
+    
+    res.status(400).json({ error: 'Webhook failed' });
+  }
+});
+
+module.exports = {
+  handleSubscriptionActivated,
+  handleSubscriptionCancelled,
+  handleSubscriptionPaused,
+  handleSubscriptionResumed,
+  handleSubscriptionCompleted
+};
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
@@ -1211,324 +1518,6 @@ app.get('/api/user/:email/response-times', async (req, res) => {
       error: 'Internal server error',
       message: 'Something went wrong on our end'
     });
-  }
-});
-app.post('/api/subscription/cancel', async (req, res) => {
-  try {
-    const { email } = req.body;
-    
-    console.log('=== CANCEL SUBSCRIPTION REQUEST ===');
-    console.log('Request body:', req.body);
-    console.log('Email:', email);
-
-    if (!email) {
-      console.log('ERROR: Missing email');
-      return res.status(400).json({
-        error: 'Missing required fields',
-        message: 'Email is required'
-      });
-    }
-
-    // Check if user exists and get their subscription details
-    console.log('Checking if user exists with email:', email);
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('id, email, subscription_id, subscription_status, plan')
-      .eq('email', email)
-      .single();
-
-    if (userError) {
-      console.log('=== USER LOOKUP ERROR ===');
-      console.log('Full userError object:', JSON.stringify(userError, null, 2));
-      
-      return res.status(404).json({
-        error: 'User not found',
-        message: 'User account not found'
-      });
-    }
-
-    console.log('User found:', user);
-
-    // Check if user has an active subscription
-    if (!user.subscription_id) {
-      console.log('ERROR: User has no subscription');
-      return res.status(400).json({
-        error: 'No subscription found',
-        message: 'User does not have an active subscription'
-      });
-    }
-
-    if (user.subscription_status === 'cancelled') {
-      console.log('ERROR: Subscription already cancelled');
-      return res.status(400).json({
-        error: 'Already cancelled',
-        message: 'Subscription is already cancelled'
-      });
-    }
-
-    // Cancel subscription in Razorpay
-    console.log('Cancelling Razorpay subscription:', user.subscription_id);
-    try {
-      const cancelledSubscription = await razorpay.subscriptions.cancel(user.subscription_id, {
-        cancel_at_cycle_end: 1 // This ensures user has access until the end of billing period
-      });
-
-      console.log('Razorpay subscription cancelled successfully:', cancelledSubscription);
-    } catch (razorpayError) {
-      console.log('=== RAZORPAY CANCELLATION ERROR ===');
-      console.log('Full razorpayError object:', JSON.stringify(razorpayError, null, 2));
-      
-      // If Razorpay cancellation fails, we still want to update our database
-      // as the user might have already cancelled through Razorpay dashboard
-      console.log('Warning: Razorpay cancellation failed, but continuing with database update');
-    }
-
-    // Update user subscription status in database
-    console.log('Updating user subscription status in database...');
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({ 
-        subscription_status: 'cancelled'
-        // Note: We don't immediately change the plan to 'free' here because
-        // the user should retain access until the end of the billing period
-      })
-      .eq('id', user.id);
-
-    if (updateError) {
-      console.log('=== USER UPDATE ERROR ===');
-      console.log('Full updateError object:', JSON.stringify(updateError, null, 2));
-      
-      return res.status(500).json({
-        error: 'Database update failed',
-        message: 'Failed to update subscription status'
-      });
-    }
-
-    console.log('User subscription status updated successfully');
-
-    console.log('=== SUBSCRIPTION CANCELLATION SUCCESSFUL ===');
-    res.json({
-      success: true,
-      message: 'Subscription cancelled successfully',
-      details: 'You will continue to have access to paid features until the end of your current billing period'
-    });
-
-  } catch (error) {
-    console.log('=== MAIN CATCH BLOCK ERROR ===');
-    console.log('Full error object:', JSON.stringify(error, null, 2));
-    console.log('Error name:', error.name);
-    console.log('Error message:', error.message);
-    console.log('Error stack:', error.stack);
-    
-    res.status(500).json({
-      error: 'Internal server error',
-      message: 'Failed to cancel subscription',
-      details: error.message
-    });
-  }
-});
-app.post('/api/payment/create-subscription', async (req, res) => {
-  try {
-    const { email, plan } = req.body;
-    
-    console.log('=== CREATE SUBSCRIPTION REQUEST ===');
-    console.log('Request body:', req.body);
-    console.log('Email:', email);
-    console.log('Plan:', plan);
-
-    if (!email || !plan) {
-      console.log('ERROR: Missing required fields');
-      return res.status(400).json({
-        error: 'Missing required fields',
-        message: 'Email and plan are required'
-      });
-    }
-
-    // Check if user exists
-    console.log('Checking if user exists with email:', email);
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('id, email')
-      .eq('email', email)
-      .single();
-
-    if (userError) {
-      console.log('=== USER LOOKUP ERROR ===');
-      console.log('Full userError object:', JSON.stringify(userError, null, 2));
-      console.log('Error message:', userError.message);
-      console.log('Error details:', userError.details);
-      console.log('Error hint:', userError.hint);
-      console.log('Error code:', userError.code);
-      
-      return res.status(404).json({
-        error: 'User not found',
-        message: 'Please create an account first'
-      });
-    }
-
-    console.log('User found:', user);
-
-    // Create subscription plan
-    console.log('Creating Razorpay subscription...');
-    const subscription = await razorpay.subscriptions.create({
-      plan_id: 'plan_RDbhJa1R5Yepct',
-      customer_notify: 1,
-      total_count: 12,
-      quantity: 1,
-      addons: [],
-      notes: {
-        user_id: user.id,
-        email: email,
-        plan_type: plan
-      }
-    });
-
-    console.log('Razorpay subscription created successfully:', subscription);
-
-    // Update user with subscription details
-    console.log('Updating user with subscription details...');
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({ 
-        subscription_id: subscription.id,
-        subscription_status: 'created'
-      })
-      .eq('id', user.id);
-
-    if (updateError) {
-      console.log('=== USER UPDATE ERROR ===');
-      console.log('Full updateError object:', JSON.stringify(updateError, null, 2));
-      console.log('Error message:', updateError.message);
-      console.log('Error details:', updateError.details);
-      console.log('Error hint:', updateError.hint);
-      console.log('Error code:', updateError.code);
-      
-      // Even if DB update fails, we can still return the subscription
-      console.log('Warning: Failed to update user with subscription details, but subscription created');
-    } else {
-      console.log('User updated with subscription details successfully');
-    }
-
-    console.log('=== SUBSCRIPTION CREATION SUCCESSFUL ===');
-    res.json({
-      success: true,
-      subscription: subscription
-    });
-
-  } catch (error) {
-    console.log('=== MAIN CATCH BLOCK ERROR ===');
-    console.log('Full error object:', JSON.stringify(error, null, 2));
-    console.log('Error name:', error.name);
-    console.log('Error message:', error.message);
-    console.log('Error stack:', error.stack);
-    
-    if (error.statusCode) {
-      console.log('Razorpay error statusCode:', error.statusCode);
-    }
-    if (error.error) {
-      console.log('Razorpay error details:', JSON.stringify(error.error, null, 2));
-    }
-    
-    res.status(500).json({
-      error: 'Internal server error',
-      message: 'Failed to create subscription',
-      details: error.message,
-      errorName: error.name,
-      ...(error.statusCode && { razorpayStatusCode: error.statusCode }),
-      ...(error.error && { razorpayError: error.error })
-    });
-  }
-});
-
-// FIXED WEBHOOK ENDPOINT
-app.post('/api/webhooks/razorpay', express.raw({type: 'application/json'}), async (req, res) => {
-  try {
-    console.log('=== WEBHOOK REQUEST RECEIVED ===');
-    console.log('Headers:', req.headers);
-    console.log('Body type:', typeof req.body);
-    console.log('Body length:', req.body.length);
-
-    const signature = req.headers['x-razorpay-signature'];
-    const body = req.body;
-
-    console.log('Webhook signature:', signature);
-
-    if (!signature) {
-      console.log('ERROR: No signature in webhook headers');
-      return res.status(400).json({ error: 'Missing signature' });
-    }
-
-    // Convert body to string if it's a Buffer (which it should be with express.raw)
-    const bodyString = Buffer.isBuffer(body) ? body.toString() : JSON.stringify(body);
-    console.log('Body converted to string, length:', bodyString.length);
-
-    // Verify webhook signature
-    console.log('Verifying webhook signature...');
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
-      .update(bodyString)
-      .digest('hex');
-
-    console.log('Expected webhook signature:', expectedSignature);
-    console.log('Webhook signatures match:', expectedSignature === signature);
-
-    if (expectedSignature !== signature) {
-      console.log('ERROR: Webhook signature verification failed');
-      return res.status(400).json({ error: 'Invalid signature' });
-    }
-
-    console.log('Webhook signature verification successful');
-
-    // Parse the event
-    const event = JSON.parse(bodyString);
-    const { event: eventType, payload } = event;
-
-    console.log('=== WEBHOOK EVENT DETAILS ===');
-    console.log('Event type:', eventType);
-    console.log('Payload:', JSON.stringify(payload, null, 2));
-
-    switch (eventType) {
-      case 'subscription.activated':
-        console.log('Processing subscription.activated event');
-        await handleSubscriptionActivated(payload.subscription.entity);
-        break;
-        
-      case 'subscription.cancelled':
-        console.log('Processing subscription.cancelled event');
-        await handleSubscriptionCancelled(payload.subscription.entity);
-        break;
-        
-      case 'subscription.paused':
-        console.log('Processing subscription.paused event');
-        await handleSubscriptionPaused(payload.subscription.entity);
-        break;
-        
-      case 'subscription.resumed':
-        console.log('Processing subscription.resumed event');
-        await handleSubscriptionResumed(payload.subscription.entity);
-        break;
-        
-      case 'subscription.completed':
-        console.log('Processing subscription.completed event');
-        await handleSubscriptionCompleted(payload.subscription.entity);
-        break;
-
-      default:
-        console.log('Unhandled event type:', eventType);
-    }
-
-    console.log('=== WEBHOOK PROCESSING SUCCESSFUL ===');
-    res.status(200).json({ received: true });
-
-  } catch (error) {
-    console.log('=== WEBHOOK ERROR ===');
-    console.log('Full error object:', JSON.stringify(error, null, 2));
-    console.log('Error name:', error.name);
-    console.log('Error message:', error.message);
-    console.log('Error stack:', error.stack);
-    console.log('Request body (raw):', req.body);
-    
-    res.status(400).json({ error: 'Webhook failed' });
   }
 });
 
