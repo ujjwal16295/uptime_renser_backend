@@ -832,7 +832,6 @@ app.post('/api/payment/create-subscription', async (req, res) => {
   }
 });
 
-
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
