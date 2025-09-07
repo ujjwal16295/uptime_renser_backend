@@ -773,6 +773,92 @@ app.post('/api/subscription/reactivate', async (req, res) => {
   }
 });
 
+// Create subscription endpoint
+app.post('/api/payment/create-subscription', async (req, res) => {
+  try {
+    const { email, plan } = req.body;
+    
+    console.log('=== CREATE SUBSCRIPTION REQUEST ===');
+    console.log('Request body:', req.body);
+    console.log('Email:', email);
+    console.log('Plan:', plan);
+
+    if (!email || !plan) {
+      console.log('ERROR: Missing required fields');
+      return res.status(400).json({
+        error: 'Missing required fields',
+        message: 'Email and plan are required'
+      });
+    }
+
+    // Check if user exists
+    console.log('Checking if user exists with email:', email);
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email')
+      .eq('email', email)
+      .single();
+
+    if (userError) {
+      console.log('=== USER LOOKUP ERROR ===');
+      console.log('Full userError object:', JSON.stringify(userError, null, 2));
+      console.log('Error message:', userError.message);
+      console.log('Error details:', userError.details);
+      console.log('Error hint:', userError.hint);
+      console.log('Error code:', userError.code);
+      
+      return res.status(404).json({
+        error: 'User not found',
+        message: 'Please create an account first'
+      });
+    }
+
+    console.log('User found:', user);
+
+    // Return price ID for Paddle checkout (you'll need to replace with your actual price ID)
+    const priceId = process.env.PADDLE_PRICE_ID || 'pri_01k4ek5kezcsa14ezw9whm5yjs';
+
+    console.log('Returning price ID for Paddle checkout:', priceId);
+
+    // Update user with pending subscription status
+    console.log('Updating user with pending subscription status...');
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        subscription_status: 'pending'
+      })
+      .eq('id', user.id);
+
+    if (updateError) {
+      console.log('=== USER UPDATE ERROR ===');
+      console.log('Full updateError object:', JSON.stringify(updateError, null, 2));
+      console.log('Warning: Failed to update user with pending status, but continuing');
+    } else {
+      console.log('User updated with pending subscription status successfully');
+    }
+
+    console.log('=== SUBSCRIPTION CREATION SUCCESSFUL ===');
+    res.json({
+      success: true,
+      priceId: priceId
+    });
+
+  } catch (error) {
+    console.log('=== MAIN CATCH BLOCK ERROR ===');
+    console.log('Full error object:', JSON.stringify(error, null, 2));
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+    
+    res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to create subscription',
+      details: error.message,
+      errorName: error.name
+    });
+  }
+});
+
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
