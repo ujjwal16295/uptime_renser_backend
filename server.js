@@ -96,6 +96,11 @@ app.post('/api/webhooks/paddle', express.raw({type: 'application/json'}), async 
         console.log('Processing subscription cancelled event');
         await handleSubscriptionCancelled(eventData.data);
         break;
+
+      case EventName.SubscriptionPastDue:
+        console.log('Processing subscription past due event');
+        await handleSubscriptionPastDue(eventData.data);
+        break;
               
       case EventName.SubscriptionPaused:
         console.log('Processing subscription paused event');
@@ -458,6 +463,25 @@ async function handleSubscriptionActivated(subscription) {
     console.log('SUCCESS: Subscription activated for user:', user.email);
   }
 }
+async function handleSubscriptionPastDue(subscription) {
+  console.log('=== HANDLING SUBSCRIPTION PAST DUE ===');
+  console.log('Subscription object:', JSON.stringify(subscription, null, 2));
+
+  const { error } = await supabase
+    .from('users')
+    .update({ 
+      plan: 'free',
+      subscription_status: 'past_due'
+    })
+    .eq('subscription_id', subscription.id);
+   
+  if (error) {
+    console.log('ERROR: Failed to update subscription to past_due in database');
+    console.log('Database error:', JSON.stringify(error, null, 2));
+  } else {
+    console.log('SUCCESS: Subscription marked as past_due and downgraded to free for subscription:', subscription.id);
+  }
+}
 
 async function handleSubscriptionUpdated(subscription) {
   console.log('=== HANDLING SUBSCRIPTION UPDATED ===');
@@ -630,6 +654,15 @@ app.post('/api/subscription/cancel', async (req, res) => {
         success: false,
         error: 'Already scheduled for cancellation',
         message: 'Subscription is already scheduled to cancel at the end of the billing period'
+      });
+    }
+
+    if (user.subscription_status === 'past_due') {
+      console.log('ERROR: Subscription is past due');
+      return res.status(400).json({
+        success: false,
+        error: 'Subscription past due',
+        message: 'Cannot cancel subscription that is past due. Please update payment method first.'
       });
     }
 
