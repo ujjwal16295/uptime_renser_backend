@@ -150,7 +150,7 @@ const getUserWithLinks = async (email) => {
   // Get user data - including subscription fields
   const { data: user, error: userError } = await supabase
     .from('users')
-    .select('id, email, credit, plan, subscription_status, subscription_id, created_at, last_credit_added_at')
+    .select('id, email, plan, subscription_status, subscription_id, created_at')
     .eq('email', email)
     .single();
 
