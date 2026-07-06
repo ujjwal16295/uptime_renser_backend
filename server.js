@@ -1014,13 +1014,13 @@ app.post('/api/users/auth', async (req, res) => {
       .single();
 
     // If user doesn't exist and we're at the limit, reject
-    if (!existingUser && existingError?.code === 'PGRST116' && userCount >= 100) {
+    if (!existingUser && existingError?.code === 'PGRST116' && userCount >= 500) {
       return res.status(403).json({
         error: 'Registration closed',
-        message: 'Registration is currently closed. Only 100 people are allowed to join at this time.',
+        message: 'Registration is currently closed. Only 500 people are allowed to join at this time.',
         data: {
           current_user_count: userCount,
-          max_users: 100
+          max_users: 500
         }
       });
     }
